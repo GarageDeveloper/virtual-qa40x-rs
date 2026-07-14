@@ -22,6 +22,11 @@ application running in a VM.
 
 ## Quick start
 
+Prebuilt binaries for macOS (arm64), Linux (x86_64/arm64, static musl) and
+Windows (x86_64/arm64) are on the
+[releases page](https://github.com/GarageDeveloper/virtual-qa40x-rs/releases).
+Or build from source:
+
 ```sh
 cargo build --release
 ./target/release/vqa40x                  # QA402, 16c0:4e37, USB/IP on port 3240
