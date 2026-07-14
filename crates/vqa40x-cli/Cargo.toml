@@ -1,0 +1,21 @@
+[package]
+name = "vqa40x-cli"
+description = "Virtual QA402/QA403 audio analyzer exported over USB/IP (unofficial, not affiliated with QuantAsylum)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "vqa40x"
+path = "src/main.rs"
+
+[dependencies]
+vqa40x-core = { path = "../vqa40x-core" }
+vqa40x-usbip = { path = "../vqa40x-usbip" }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }

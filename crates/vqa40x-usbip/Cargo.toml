@@ -1,0 +1,19 @@
+[package]
+name = "vqa40x-usbip"
+description = "USB/IP device-side server exposing the virtual QA40x to Linux (vhci-hcd) and Windows (usbip-win2) hosts."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+vqa40x-core = { path = "../vqa40x-core" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+log = { workspace = true }
+socket2 = "0.6.5"
+
+[dev-dependencies]
+env_logger = { workspace = true }
+sha2 = { workspace = true }

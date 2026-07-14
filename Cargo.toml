@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vqa40x-core",
+    "crates/vqa40x-usbip",
+    "crates/vqa40x-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Raphaël Enrici"]
+repository = "https://github.com/GarageDeveloper/virtual-qa40x-rs"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "signal"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+async-trait = "0.1"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+anyhow = "1"

@@ -1,0 +1,7 @@
+# Build artifacts
+/target
+
+# Firmware images received by the fake bootloader (--save-firmware) or any
+# other SB2.1 image: vendor-proprietary material, never committed.
+/flashes/
+*.sb
