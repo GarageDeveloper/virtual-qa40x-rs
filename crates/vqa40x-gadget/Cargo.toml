@@ -1,0 +1,23 @@
+[package]
+name = "vqa40x-gadget"
+description = "Present the virtual QA40x as a REAL USB device via the Linux USB gadget stack (FunctionFS), e.g. on a Raspberry Pi plugged into the host."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "vqa40x-gadget"
+path = "src/main.rs"
+
+[dependencies]
+vqa40x-core = { path = "../vqa40x-core" }
+log = { workspace = true }
+env_logger = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio = { workspace = true }
+libc = { workspace = true }

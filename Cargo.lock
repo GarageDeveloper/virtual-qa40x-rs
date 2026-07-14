@@ -650,6 +650,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vqa40x-gadget"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "libc",
+ "log",
+ "tokio",
+ "vqa40x-core",
+]
+
+[[package]]
 name = "vqa40x-usbip"
 version = "0.1.0"
 dependencies = [

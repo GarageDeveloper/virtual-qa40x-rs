@@ -54,8 +54,10 @@ hardware there):
   ```
   WinUSB binds automatically (the device exposes MS OS 2.0 descriptors), so
   the official app and libusb/nusb-based apps work without Zadig or an INF.
-* **macOS** has no USB/IP client: run the server on the Mac and attach from a
-  Linux or Windows VM.
+* **macOS** has no USB/IP client. Either run the server on the Mac and attach
+  from a Linux/Windows VM, or present the device as **real USB hardware** with
+  a Linux board (e.g. a Raspberry Pi) plugged into the Mac — see
+  [GADGET.md](GADGET.md).
 
 `vqa40x --help` lists every option. The most useful:
 
@@ -125,6 +127,7 @@ calibrated host always measures a loopback of exactly `--loopback-gain-db`.
 |---|---|
 | `vqa40x-core` | Transport-agnostic device model: register bus, audio engine, calibration, KBOOT bootloader, persona switching |
 | `vqa40x-usbip` | USB/IP device-side server (devlist/import, URB submit/unlink, per-endpoint ordering) |
+| `vqa40x-gadget` | Linux USB-gadget (FunctionFS) transport — present the device as real USB hardware (see [GADGET.md](GADGET.md)) |
 | `vqa40x-cli` | The `vqa40x` binary |
 
 Personas implement a small `UsbBackend` trait, so other transports (e.g. a
