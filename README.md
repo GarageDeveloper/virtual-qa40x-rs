@@ -25,6 +25,14 @@ application running in a VM.
 Prebuilt binaries for macOS (arm64), Linux (x86_64/arm64, static musl) and
 Windows (x86_64/arm64) are on the
 [releases page](https://github.com/GarageDeveloper/virtual-qa40x-rs/releases).
+
+On macOS the downloaded binary is not notarized, so Gatekeeper blocks it
+("cannot be opened"). Clear the quarantine flag once:
+
+```sh
+xattr -d com.apple.quarantine vqa40x
+```
+
 Or build from source:
 
 ```sh
