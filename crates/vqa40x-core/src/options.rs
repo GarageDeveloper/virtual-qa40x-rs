@@ -127,6 +127,13 @@ pub struct SimOptions {
     /// page. The audio engine reads its trims from the served page either way.
     pub cal_page: Option<[u8; 512]>,
 
+    /// Boot straight into the NXP KBOOT bootloader persona (`1fc9:0022`),
+    /// waiting for a firmware image — as a real unit does when a previous
+    /// flash failed and left it stuck in DFU. Lets the official app's recovery
+    /// path ("Load default secure image, must be in HID mode") be tested. On a
+    /// successful flash the device boots into the analyzer as usual.
+    pub boot_bootloader: bool,
+
     /// Simulated flash-write time: the bootloader paces the ReceiveSbFile
     /// data phase over roughly this many seconds (0.0 = instant). A real
     /// flash takes a few seconds; the host app's progress bar follows.
@@ -155,6 +162,7 @@ impl Default for SimOptions {
             save_firmware: None,
             cal_page: None,
             flash_secs: 0.0,
+            boot_bootloader: false,
         }
     }
 }
