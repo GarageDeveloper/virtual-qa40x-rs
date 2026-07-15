@@ -545,3 +545,101 @@ async fn devlist_reports_the_device() {
     let busid = String::from_utf8_lossy(&dev[256..288]);
     assert!(busid.starts_with("1-1"));
 }
+
+/// Two devices under one server: each attaches by its own busid and presents
+/// its own identity (model/PID and serial).
+#[tokio::test(flavor = "multi_thread")]
+async fn multi_device_distinct_identities() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let dev_a = Simulator::new(SimOptions {
+        model: vqa40x_core::Model::Qa402,
+        pid: 0x4E37,
+        serial: "AAAA_0001".to_string(),
+        busid: "1-1".to_string(),
+        ..SimOptions::default()
+    });
+    let dev_b = Simulator::new(SimOptions {
+        model: vqa40x_core::Model::Qa403,
+        pid: 0x4E39,
+        serial: "BBBB_0002".to_string(),
+        busid: "1-2".to_string(),
+        ..SimOptions::default()
+    });
+    tokio::spawn(vqa40x_usbip::serve_many(vec![dev_a, dev_b], listener));
+
+    // DEVLIST reports both.
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    let mut req = Vec::new();
+    req.extend_from_slice(&0x0111u16.to_be_bytes());
+    req.extend_from_slice(&0x8005u16.to_be_bytes());
+    req.extend_from_slice(&0u32.to_be_bytes());
+    sock.write_all(&req).await.unwrap();
+    let mut hdr = [0u8; 12];
+    sock.read_exact(&mut hdr).await.unwrap();
+    assert_eq!(u32::from_be_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]), 2);
+    drop(sock);
+
+    // Each busid attaches to its own device.
+    let (mut a, vid_a, pid_a) = Client::attach(addr, "1-1").await;
+    assert_eq!((vid_a, pid_a), (0x16C0, 0x4E37), "device A is a QA402");
+    assert_eq!(a.reg_read(0x1D).await, 0xAAAA_0001, "device A serial");
+
+    let (mut b, vid_b, pid_b) = Client::attach(addr, "1-2").await;
+    assert_eq!((vid_b, pid_b), (0x16C0, 0x4E39), "device B is a QA403");
+    assert_eq!(b.reg_read(0x1D).await, 0xBBBB_0002, "device B serial");
+
+    // Both stay independently usable.
+    assert_eq!(a.reg_read(0x10).await, 60);
+    assert_eq!(b.reg_read(0x10).await, 60);
+
+    // An unknown busid is refused.
+    assert!(Client::try_attach(addr, "9-9").await.is_none());
+}
+
+/// `boot_bootloader` starts the device directly as the NXP KBOOT bootloader
+/// (recovery mode), and a flash boots it into the analyzer.
+#[tokio::test(flavor = "multi_thread")]
+async fn boot_bootloader_recovery() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let sim = Simulator::new(SimOptions {
+        boot_bootloader: true,
+        post_flash_version: Some(60),
+        ..SimOptions::default()
+    });
+    tokio::spawn(vqa40x_usbip::serve(sim, listener));
+
+    // Boots straight into the NXP bootloader.
+    let (mut c, vid, pid) = Client::attach(addr, "1-1").await;
+    assert_eq!((vid, pid), (0x1FC9, 0x0022), "starts in KBOOT bootloader");
+    assert_eq!(c.control_out(0x00, 9, 1, 0, &[]).await, 0);
+
+    // Recovery flash: a minimal valid SB2.1 image.
+    let mut image = [0u8; 100];
+    image[0x14..0x18].copy_from_slice(b"STMP");
+    let mut cmd = vec![0x08, 0x00, 0x00, 0x01];
+    cmd.extend_from_slice(&(image.len() as u32).to_le_bytes());
+    assert_eq!(c.bulk_out(1, &kboot_report(1, &cmd)).await, 0);
+    let (st, _ack) = c.bulk_in(1, 64).await;
+    assert_eq!(st, 0);
+    for chunk in image.chunks(28) {
+        assert_eq!(c.bulk_out(1, &kboot_report(2, chunk)).await, 0);
+    }
+    let (st, fin) = c.bulk_in(1, 64).await;
+    assert_eq!(st, 0);
+    assert_eq!(
+        u32::from_le_bytes([fin[8], fin[9], fin[10], fin[11]]),
+        0,
+        "flash succeeds"
+    );
+    c.wait_eof().await; // settles, then simulated replug
+    drop(c);
+
+    // Comes back as the analyzer.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (mut c, vid, pid) = Client::attach_retry(addr, "1-1").await;
+    assert_eq!((vid, pid), (0x16C0, 0x4E37), "recovered to the analyzer");
+    assert_eq!(c.reg_read(0x10).await, 60, "firmware after recovery flash");
+}
