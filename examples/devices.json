@@ -1,0 +1,26 @@
+{
+  "devices": [
+    {
+      "model": "qa402",
+      "busid": "1-1",
+      "serial": "C0FF_EE01"
+    },
+    {
+      "model": "qa402",
+      "busid": "1-2",
+      "serial": "random"
+    },
+    {
+      "model": "qa403",
+      "busid": "1-3",
+      "serial": "A403_0001",
+      "fw-version": 60
+    },
+    {
+      "model": "qa403",
+      "busid": "1-4",
+      "serial": "random",
+      "boot-bootloader": true
+    }
+  ]
+}

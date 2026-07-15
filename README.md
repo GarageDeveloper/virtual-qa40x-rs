@@ -87,6 +87,20 @@ Logs: `RUST_LOG=vqa40x=debug,info` shows every register operation.
    resolved via `--registry <firmware-registry.json>` (sha256 lookup) or
    `--post-flash-version <n>`, else unchanged.
 
+### Recovery mode (stuck in bootloader)
+
+`--boot-bootloader` starts the device directly as the NXP KBOOT bootloader
+(`1fc9:0022`), as a real unit does when a previous flash failed and left it in
+DFU. This exercises the official app's recovery path — its hidden debug menu
+(type `qa40x` in the app) → "Load default secure image (must be in HID mode)".
+A successful flash boots the device into the analyzer.
+
+```sh
+vqa40x --boot-bootloader --post-flash-version 60
+```
+
+### Re-attaching
+
 USB/IP clients do not re-attach by themselves. Run a retry loop —
 `tools/auto-attach.ps1` (Windows) — before triggering the update:
 
@@ -98,6 +112,31 @@ Demo: make the official app (which bundles firmware v60) offer an upgrade:
 
 ```sh
 vqa40x --fw-version 58 --post-flash-version 60 --flash-secs 6 --save-firmware ./flashes
+```
+
+## Multiple devices
+
+Run a whole bench — several QA402s and QA403s at once, each with its own
+busid and serial — from one JSON file, relaunchable identically:
+
+```sh
+vqa40x --config examples/devices.json
+```
+
+Each entry sets any subset of the per-device options; a fixed `serial`
+reproduces across runs, while `"serial": "random"` (or omitting it) picks a
+fresh one each launch. Attach each device by its busid
+(`usbip attach -r <host> -b 1-2`). `vqa40x --dump-config` prints the JSON for
+the current flags as a starting template.
+
+```json
+{
+  "devices": [
+    { "model": "qa402", "busid": "1-1", "serial": "C0FF_EE01" },
+    { "model": "qa403", "busid": "1-2", "serial": "random" },
+    { "model": "qa403", "busid": "1-3", "boot-bootloader": true }
+  ]
+}
 ```
 
 ## Calibration page

@@ -632,6 +632,8 @@ dependencies = [
  "clap",
  "env_logger",
  "log",
+ "serde",
+ "serde_json",
  "tokio",
  "vqa40x-core",
  "vqa40x-usbip",

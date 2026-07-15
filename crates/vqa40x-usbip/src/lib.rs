@@ -1,12 +1,12 @@
 //! USB/IP device-side server for the virtual QA40x.
 //!
-//! Exports the simulator's current persona as one USB device (`busid` from the
-//! options, default `1-1`). Attach from:
+//! Exports one or more simulated devices, each under its own `busid`. The
+//! DEVLIST reply lists every device; IMPORT selects one by busid. Attach from:
 //!
 //! * **Linux**: `sudo modprobe vhci-hcd && sudo usbip attach -r <host> -b 1-1`
 //! * **Windows**: usbip-win2 (`usbip.exe attach -r <host> -b 1-1`)
 //!
-//! When the device "reboots" (bootloader entry, end of a fake flash) the
+//! When a device "reboots" (bootloader entry, end of a fake flash) its
 //! connection is dropped so the client sees a real unplug, and the next attach
 //! enumerates the new persona.
 
@@ -23,16 +23,23 @@ use tokio_util::sync::CancellationToken;
 use vqa40x_core::backend::{SetupPacket, Stall, UsbBackend};
 use vqa40x_core::Simulator;
 
-/// Serve the simulator on an already-bound listener, forever.
+/// Serve one simulated device (convenience wrapper over [`serve_many`]).
 pub async fn serve(sim: Simulator, listener: TcpListener) -> std::io::Result<()> {
+    serve_many(vec![sim], listener).await
+}
+
+/// Serve a set of simulated devices on an already-bound listener, forever.
+/// Each device is exported under its own busid; busids must be unique.
+pub async fn serve_many(devices: Vec<Simulator>, listener: TcpListener) -> std::io::Result<()> {
+    let devices = Arc::new(devices);
     loop {
         let (socket, peer) = listener.accept().await?;
         // Debug level: an auto-attach retry loop probes every few hundred ms,
         // which would flood the log at info.
         debug!("connection from {peer}");
-        let sim = sim.clone();
+        let devices = devices.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(sim, socket).await {
+            if let Err(e) = handle_connection(devices, socket).await {
                 debug!("connection {peer} ended: {e}");
             } else {
                 debug!("connection {peer} closed");
@@ -41,7 +48,10 @@ pub async fn serve(sim: Simulator, listener: TcpListener) -> std::io::Result<()>
     }
 }
 
-async fn handle_connection(sim: Simulator, mut socket: TcpStream) -> std::io::Result<()> {
+async fn handle_connection(
+    devices: Arc<Vec<Simulator>>,
+    mut socket: TcpStream,
+) -> std::io::Result<()> {
     socket.set_nodelay(true)?;
     // Detect dead peers (killed VM, dropped network): a vanished client must
     // release the single-attach import instead of holding the device forever.
@@ -60,24 +70,22 @@ async fn handle_connection(sim: Simulator, mut socket: TcpStream) -> std::io::Re
 
     match code {
         OP_REQ_DEVLIST => {
-            if sim.is_unplugged() {
-                // Simulated cable-out window: no device on the "bus".
-                let mut reply = op_header(OP_REP_DEVLIST, 0);
-                reply.extend_from_slice(&0u32.to_be_bytes());
-                socket.write_all(&reply).await?;
-                return Ok(());
-            }
-            let backend = sim.current();
-            let summary = backend.summary();
+            // List every present device (an "unplugged" one — e.g. mid
+            // post-flash replug — shows no device, like an empty port).
+            let exported: Vec<&Simulator> = devices.iter().filter(|d| !d.is_unplugged()).collect();
             let mut reply = op_header(OP_REP_DEVLIST, 0);
-            reply.extend_from_slice(&1u32.to_be_bytes()); // one exported device
-            reply.extend_from_slice(&usb_device_block(
-                sim.busid(),
-                &summary,
-                summary.interfaces.len() as u8,
-            ));
-            for (class, subclass, protocol) in &summary.interfaces {
-                reply.extend_from_slice(&[*class, *subclass, *protocol, 0]);
+            reply.extend_from_slice(&(exported.len() as u32).to_be_bytes());
+            for d in exported {
+                let backend = d.current();
+                let summary = backend.summary();
+                reply.extend_from_slice(&usb_device_block(
+                    d.busid(),
+                    &summary,
+                    summary.interfaces.len() as u8,
+                ));
+                for (class, subclass, protocol) in &summary.interfaces {
+                    reply.extend_from_slice(&[*class, *subclass, *protocol, 0]);
+                }
             }
             socket.write_all(&reply).await?;
             Ok(())
@@ -89,20 +97,20 @@ async fn handle_connection(sim: Simulator, mut socket: TcpStream) -> std::io::Re
                 .trim_end_matches('\0')
                 .to_string();
 
-            if requested != sim.busid() {
+            let Some(sim) = devices.iter().find(|d| d.busid() == requested) else {
                 warn!("import for unknown busid {requested:?}");
                 socket.write_all(&op_header(OP_REP_IMPORT, 1)).await?;
                 return Ok(());
-            }
+            };
             if sim.is_unplugged() {
                 // Simulated cable-out window (post-flash user replug).
-                debug!("import refused: device is (virtually) unplugged");
+                debug!("import refused: {requested} is (virtually) unplugged");
                 socket.write_all(&op_header(OP_REP_IMPORT, 1)).await?;
                 return Ok(());
             }
             if !sim.try_import() {
                 // Normal with an auto-attach loop running while attached.
-                debug!("import refused: device already attached to another client");
+                debug!("import refused: {requested} already attached to another client");
                 socket.write_all(&op_header(OP_REP_IMPORT, 1)).await?;
                 return Ok(());
             }
@@ -123,7 +131,7 @@ async fn handle_connection(sim: Simulator, mut socket: TcpStream) -> std::io::Re
                 sim.busid()
             );
 
-            let result = urb_phase(&sim, backend, socket).await;
+            let result = urb_phase(sim, backend, socket).await;
             sim.release_import();
             result
         }
