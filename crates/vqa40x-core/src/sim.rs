@@ -65,16 +65,24 @@ impl Simulator {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (generation, _) = watch::channel(0u64);
 
-        let analyzer: Arc<dyn UsbBackend> = Arc::new(Analyzer::new(
-            opts.clone(),
-            opts.fw_version,
-            events_tx.clone(),
-        ));
+        // A unit whose last flash failed boots stuck in the DFU bootloader;
+        // `boot_bootloader` reproduces that so the official app's recovery
+        // flow can be tested. Otherwise boot into the analyzer.
+        let initial: Arc<dyn UsbBackend> = if opts.boot_bootloader {
+            info!("booting into the NXP KBOOT bootloader (1fc9:0022), awaiting a firmware image");
+            Arc::new(Bootloader::new(opts.clone(), events_tx.clone()))
+        } else {
+            Arc::new(Analyzer::new(
+                opts.clone(),
+                opts.fw_version,
+                events_tx.clone(),
+            ))
+        };
 
         let inner = Arc::new(SimInner {
             fw_version: Mutex::new(opts.fw_version),
             flash_count: Mutex::new(0),
-            current: Mutex::new(analyzer),
+            current: Mutex::new(initial),
             generation,
             events_tx,
             imported: AtomicBool::new(false),
