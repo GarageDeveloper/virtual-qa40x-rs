@@ -56,6 +56,44 @@ jobs:
         run: ${{ matrix.setup }}
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Sign and notarize (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          binary="target/${{ matrix.target }}/release/vqa40x"
+          keychain_pwd=$(openssl rand -hex 16)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$keychain_pwd" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$keychain_pwd" build.keychain
+          security import certificate.p12 -k build.keychain \
+            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$keychain_pwd" build.keychain
+          rm certificate.p12
+          codesign --force --options runtime --timestamp \
+            --sign "Developer ID Application" "$binary"
+          codesign --verify --strict --verbose=2 "$binary"
+          ditto -c -k "$binary" notarize.zip
+          submission=$(xcrun notarytool submit notarize.zip \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait --output-format json)
+          echo "$submission"
+          rm notarize.zip
+          status=$(echo "$submission" | jq -r .status)
+          if [ "$status" != "Accepted" ]; then
+            id=$(echo "$submission" | jq -r .id)
+            xcrun notarytool log "$id" \
+              --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD"
+            exit 1
+          fi
       - name: Package (unix)
         if: runner.os != 'Windows'
         run: |
