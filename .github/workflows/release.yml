@@ -80,18 +80,29 @@ jobs:
             --sign "Developer ID Application" "$binary"
           codesign --verify --strict --verbose=2 "$binary"
           ditto -c -k "$binary" notarize.zip
-          submission=$(xcrun notarytool submit notarize.zip \
+          id=$(xcrun notarytool submit notarize.zip \
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --wait --output-format json)
-          echo "$submission"
+            --output-format json | jq -r .id)
           rm notarize.zip
-          status=$(echo "$submission" | jq -r .status)
+          echo "notarization submission: $id"
+          # Poll ourselves instead of `submit --wait`: the poll survives
+          # transient network errors and prints progress. 2h hard timeout.
+          status="In Progress"
+          for i in $(seq 1 120); do
+            sleep 60
+            info=$(xcrun notarytool info "$id" \
+              --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --output-format json) || { echo "[$i] info failed, retrying"; continue; }
+            status=$(echo "$info" | jq -r .status)
+            echo "[$i] status: $status"
+            [ "$status" = "In Progress" ] || break
+          done
           if [ "$status" != "Accepted" ]; then
-            id=$(echo "$submission" | jq -r .id)
             xcrun notarytool log "$id" \
               --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
-              --password "$APPLE_APP_SPECIFIC_PASSWORD"
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" || true
             exit 1
           fi
       - name: Package (unix)
