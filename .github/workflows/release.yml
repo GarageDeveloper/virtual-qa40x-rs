@@ -58,6 +58,7 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Sign and notarize (macOS)
         if: runner.os == 'macOS'
+        timeout-minutes: 30
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -80,27 +81,19 @@ jobs:
             --sign "Developer ID Application" "$binary"
           codesign --verify --strict --verbose=2 "$binary"
           ditto -c -k "$binary" notarize.zip
-          id=$(xcrun notarytool submit notarize.zip \
+          # `submit --wait` blocks until Apple returns a verdict. Apple's
+          # queue is usually a few minutes but the very first submission of
+          # a team can take far longer; the step timeout-minutes above caps
+          # the wait so a stuck submission fails instead of burning the run.
+          result=$(xcrun notarytool submit notarize.zip \
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --output-format json | jq -r .id)
+            --wait --output-format json)
           rm notarize.zip
-          echo "notarization submission: $id"
-          # Poll ourselves instead of `submit --wait`: the poll survives
-          # transient network errors and prints progress. 2h hard timeout.
-          status="In Progress"
-          for i in $(seq 1 120); do
-            sleep 60
-            info=$(xcrun notarytool info "$id" \
-              --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
-              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-              --output-format json) || { echo "[$i] info failed, retrying"; continue; }
-            status=$(echo "$info" | jq -r .status)
-            echo "[$i] status: $status"
-            [ "$status" = "In Progress" ] || break
-          done
-          if [ "$status" != "Accepted" ]; then
-            xcrun notarytool log "$id" \
+          echo "$result"
+          # `submit --wait` can exit 0 even on Invalid, so gate on the status.
+          if [ "$(echo "$result" | jq -r .status)" != "Accepted" ]; then
+            xcrun notarytool log "$(echo "$result" | jq -r .id)" \
               --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
               --password "$APPLE_APP_SPECIFIC_PASSWORD" || true
             exit 1
