@@ -76,7 +76,11 @@ impl Stream {
             dac: VecDeque::new(),
             delay: latency,
             phase: 0.0,
-            rng: if state == 0 { 0x9E37_79B9_7F4A_7C15 } else { state },
+            rng: if state == 0 {
+                0x9E37_79B9_7F4A_7C15
+            } else {
+                state
+            },
             overflowed: false,
         }
     }
@@ -234,7 +238,10 @@ impl Analyzer {
                 5 => {
                     if st.stream.is_none() {
                         debug!("stream start (rate {} Hz)", rate_hz(st.rate_idx));
-                        let seed = self.opts.noise_seed.unwrap_or_else(crate::rng::entropy_seed);
+                        let seed = self
+                            .opts
+                            .noise_seed
+                            .unwrap_or_else(crate::rng::entropy_seed);
                         st.stream = Some(Stream::new(self.opts.latency_samples, seed));
                         self.stream_notify.notify_waiters();
                     }
@@ -608,5 +615,54 @@ impl UsbBackend for Analyzer {
                 Err(Stall)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn analyzer(noise_seed: Option<u64>) -> Analyzer {
+        let opts = SimOptions {
+            realtime: false,
+            loopback: false,
+            noise_dbfs: -60.0,
+            noise_seed,
+            ..SimOptions::default()
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        Analyzer::new(Arc::new(opts), 60, tx)
+    }
+
+    /// One start → block → stop cycle over the register bus, returning the
+    /// raw ADC bytes (pure noise: no loopback, no generator).
+    fn one_acquisition(a: &Analyzer, n: usize) -> Vec<u8> {
+        a.handle_frame(&[reg::STREAM_CTRL, 0, 0, 0, 5]);
+        let block = a.produce_adc_block(&mut a.st.lock().unwrap(), n);
+        a.handle_frame(&[reg::STREAM_CTRL, 0, 0, 0, 0]);
+        block
+    }
+
+    #[test]
+    fn unseeded_streams_differ() {
+        let a = analyzer(None);
+        assert_ne!(one_acquisition(&a, 256), one_acquisition(&a, 256));
+    }
+
+    #[test]
+    fn seeded_streams_replay() {
+        let a = analyzer(Some(42));
+        assert_eq!(one_acquisition(&a, 256), one_acquisition(&a, 256));
+    }
+
+    #[test]
+    fn seed_zero_is_valid() {
+        let a = analyzer(Some(0));
+        let block = one_acquisition(&a, 256);
+        let first = &block[..4];
+        assert!(
+            block.chunks_exact(4).any(|s| s != first),
+            "seed 0 must still produce varying noise, not a stuck RNG"
+        );
     }
 }
