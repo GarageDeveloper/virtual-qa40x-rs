@@ -95,6 +95,10 @@ pub struct SimOptions {
     pub latency_samples: usize,
     /// ADC noise floor in dBFS RMS (Gaussian). `-200` ≈ disabled.
     pub noise_dbfs: f32,
+    /// Fixed noise RNG seed: every stream start replays the identical noise
+    /// sequence (reproducible tests/debugging). `None` draws fresh entropy per
+    /// stream so each acquisition is a new realization, like real hardware.
+    pub noise_seed: Option<u64>,
     /// Loop the DAC output back into the ADC (the "cable in loopback" setup).
     pub loopback: bool,
     /// Extra gain applied in the loopback path, in dB (0 = ideal cable).
@@ -144,6 +148,7 @@ impl Default for SimOptions {
             realtime: true,
             latency_samples: 1200,
             noise_dbfs: -140.0,
+            noise_seed: None,
             loopback: true,
             loopback_gain_db: 0.0,
             h2_dbc: None,
