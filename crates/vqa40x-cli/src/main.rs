@@ -85,6 +85,11 @@ struct Args {
     #[arg(long, default_value_t = -140.0, allow_hyphen_values = true)]
     noise_dbfs: f32,
 
+    /// Fixed noise RNG seed: every stream restart replays the identical noise
+    /// sequence (reproducible runs). Default: fresh entropy per acquisition.
+    #[arg(long)]
+    noise_seed: Option<u64>,
+
     /// Disable the DAC->ADC loopback (open input).
     #[arg(long)]
     no_loopback: bool,
@@ -274,6 +279,7 @@ fn spec_to_options(spec: &DeviceSpec, index: usize) -> Result<SimOptions> {
         realtime: spec.realtime.unwrap_or(true),
         latency_samples: spec.latency_samples.unwrap_or(1200),
         noise_dbfs: spec.noise_dbfs.unwrap_or(-140.0),
+        noise_seed: spec.noise_seed,
         loopback: spec.loopback.unwrap_or(true),
         loopback_gain_db: spec.loopback_gain_db.unwrap_or(0.0),
         h2_dbc: spec.h2_dbc,
@@ -308,6 +314,7 @@ fn args_to_spec(a: &Args) -> DeviceSpec {
         realtime: Some(!a.no_realtime),
         latency_samples: Some(a.latency_samples),
         noise_dbfs: Some(a.noise_dbfs),
+        noise_seed: a.noise_seed,
         loopback: Some(!a.no_loopback),
         loopback_gain_db: Some(a.loopback_gain_db),
         h2_dbc: a.h2_dbc,

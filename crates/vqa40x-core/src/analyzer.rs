@@ -66,14 +66,17 @@ struct Stream {
 }
 
 impl Stream {
-    fn new(latency: usize) -> Self {
+    fn new(latency: usize, seed: u64) -> Self {
+        // Mix the seed so nearby user seeds decorrelate; xorshift64 sticks at
+        // a zero state, so map that one value away.
+        let state = crate::rng::splitmix64(seed);
         Self {
             started: Instant::now(),
             emitted: 0,
             dac: VecDeque::new(),
             delay: latency,
             phase: 0.0,
-            rng: 0x9E37_79B9_7F4A_7C15,
+            rng: if state == 0 { 0x9E37_79B9_7F4A_7C15 } else { state },
             overflowed: false,
         }
     }
@@ -231,7 +234,8 @@ impl Analyzer {
                 5 => {
                     if st.stream.is_none() {
                         debug!("stream start (rate {} Hz)", rate_hz(st.rate_idx));
-                        st.stream = Some(Stream::new(self.opts.latency_samples));
+                        let seed = self.opts.noise_seed.unwrap_or_else(crate::rng::entropy_seed);
+                        st.stream = Some(Stream::new(self.opts.latency_samples, seed));
                         self.stream_notify.notify_waiters();
                     }
                 }

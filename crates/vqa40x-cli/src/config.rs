@@ -44,6 +44,9 @@ pub struct DeviceSpec {
     pub latency_samples: Option<usize>,
     /// ADC noise floor, dBFS.
     pub noise_dbfs: Option<f32>,
+    /// Fixed noise RNG seed (reproducible noise); omit for fresh entropy
+    /// per acquisition.
+    pub noise_seed: Option<u64>,
     /// DAC→ADC loopback enabled (default true).
     pub loopback: Option<bool>,
     /// Extra loopback gain, dB.
