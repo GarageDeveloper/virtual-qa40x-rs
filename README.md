@@ -68,6 +68,7 @@ hardware there):
 | `--listen <addr:port>` | USB/IP listen address (default `0.0.0.0:3240`) |
 | `--gen 1000:-10[:left]` | Independent sine at the input (Hz : dBV [: channel]) |
 | `--noise-dbfs`, `--h2-dbc`, `--h3-dbc` | Noise floor and harmonic distortion |
+| `--noise-seed <n>` | Fixed noise seed: reproducible noise on every acquisition (default: fresh entropy each stream) |
 | `--no-loopback`, `--loopback-gain-db` | DAC→ADC loopback (on by default, 0 dB) |
 | `--latency-samples <n>` | Loopback round-trip latency |
 | `--no-realtime` | Serve samples as fast as asked (CI/tests) instead of pacing at the sample rate |
