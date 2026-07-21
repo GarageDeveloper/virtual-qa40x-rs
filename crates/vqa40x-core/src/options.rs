@@ -61,16 +61,7 @@ pub struct GenSpec {
 /// Used as the default so the virtual device never impersonates a specific
 /// physical unit; pass an explicit serial to pin it.
 pub fn random_serial() -> String {
-    // No RNG dependency: mix wall clock + PID through splitmix64.
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
-        ^ (std::process::id() as u64) << 32;
-    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    let v = (z ^ (z >> 31)) as u32;
+    let v = crate::rng::entropy_seed() as u32;
     format!("{:04X}_{:04X}", v >> 16, v & 0xFFFF)
 }
 

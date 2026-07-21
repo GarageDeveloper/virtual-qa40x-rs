@@ -31,6 +31,7 @@ pub mod calpage;
 pub mod identity;
 pub mod options;
 pub mod registry;
+pub mod rng;
 pub mod sim;
 
 pub use options::{GenChannel, GenSpec, Model, SimOptions};
