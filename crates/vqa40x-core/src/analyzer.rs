@@ -227,7 +227,7 @@ impl Analyzer {
                 st.cal_ptr = (st.cal_ptr + 4) % 512;
                 u32::from_le_bytes(chunk)
             }
-            reg::CAPABILITY => 0x4000_0040,
+            reg::CAPABILITY => self.opts.capability,
             reg::SERIAL_NUMBER => self.opts.serial_u32(),
             reg::STREAM_STATUS => {
                 // Reads 0x40 right after a stream stop, 0x00 when idle —
@@ -667,6 +667,18 @@ mod tests {
         let block = a.produce_adc_block(&mut a.st.lock().unwrap(), n);
         a.handle_frame(&[reg::STREAM_CTRL, 0, 0, 0, 0]);
         block
+    }
+
+    #[test]
+    fn capability_register_is_configurable() {
+        let opts = SimOptions {
+            capability: 0x4000_00C0,
+            ..SimOptions::default()
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let a = Analyzer::new(Arc::new(opts), 60, tx);
+        a.handle_frame(&[0x80 | reg::CAPABILITY, 0, 0, 0, 0]);
+        assert_eq!(a.st.lock().unwrap().replies.pop_front(), Some(0x4000_00C0));
     }
 
     #[test]

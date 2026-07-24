@@ -54,6 +54,13 @@ struct Args {
     #[arg(long, default_value_t = 60)]
     fw_version: u32,
 
+    /// Value served by the capability register 0x1B (hex or decimal).
+    /// Default: the word captured on a real QA402 (0x40000040). A real QA403
+    /// likely differs — the official app reads this register at connect, so
+    /// use this to probe which bits unlock e.g. the 384 kHz menu entry.
+    #[arg(long, value_parser = parse_u32)]
+    capability: Option<u32>,
+
     /// Firmware version reported after a fake flash (when the image is not in
     /// the registry). Without it the version is unchanged by a flash.
     #[arg(long)]
@@ -177,6 +184,16 @@ fn parse_u16(s: &str) -> Result<u16, String> {
     r.map_err(|e| e.to_string())
 }
 
+fn parse_u32(s: &str) -> Result<u32, String> {
+    let s = s.trim();
+    let r = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16)
+    } else {
+        s.parse()
+    };
+    r.map_err(|e| e.to_string())
+}
+
 fn parse_gen(s: &str) -> Result<GenSpec, String> {
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() < 2 || parts.len() > 3 {
@@ -280,12 +297,17 @@ fn spec_to_options(spec: &DeviceSpec, index: usize) -> Result<SimOptions> {
         Some(s) => Some(parse_gen(s).map_err(|e| anyhow::anyhow!("device {index}: gen: {e}"))?),
         None => None,
     };
+    let capability = match spec.capability.as_deref() {
+        Some(s) => parse_u32(s).map_err(|e| anyhow::anyhow!("device {index}: capability: {e}"))?,
+        None => vqa40x_core::options::DEFAULT_CAPABILITY,
+    };
     Ok(SimOptions {
         model,
         vid,
         pid,
         serial: resolve_serial(spec.serial.as_deref()),
         fw_version: spec.fw_version.unwrap_or(60),
+        capability,
         post_flash_version: spec.post_flash_version,
         registry: load_registry(spec.registry.as_deref())?,
         realtime: spec.realtime.unwrap_or(true),
@@ -317,6 +339,7 @@ fn args_to_spec(a: &Args) -> DeviceSpec {
         vid: Some(format!("0x{:04X}", a.vid)),
         pid: a.pid.map(|p| format!("0x{p:04X}")),
         fw_version: Some(a.fw_version),
+        capability: a.capability.map(|v| format!("0x{v:08X}")),
         boot_bootloader: Some(a.boot_bootloader),
         post_flash_version: a.post_flash_version,
         flash_secs: Some(a.flash_secs),
