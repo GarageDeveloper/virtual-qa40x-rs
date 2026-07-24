@@ -192,6 +192,7 @@ impl Recorder {
             rec: self.clone(),
             conn: self.conn_seq.fetch_add(1, Ordering::SeqCst) + 1,
             decode_regs: !is_hid,
+            i2s_frame_bytes: std::sync::atomic::AtomicUsize::new(8),
             pending_reads: Mutex::new(VecDeque::new()),
         };
         let mut l = conn.line("attach");
@@ -238,6 +239,10 @@ pub struct ConnRecorder {
     rec: Arc<Recorder>,
     conn: u64,
     decode_regs: bool,
+    /// Bytes per I2S frame on EP3, tracked from writes to register 0x0B
+    /// (bit 6 set = 32-bit = 8 bytes; clear = 16-bit = 4). Defaults to the
+    /// observed 32-bit width until a write says otherwise.
+    i2s_frame_bytes: std::sync::atomic::AtomicUsize,
     /// Register addresses of in-flight read requests (`0x80|reg` frames),
     /// popped when the 4-byte reply leaves on EP1 IN. The device answers in
     /// order, so a FIFO pairs them correctly.
@@ -299,6 +304,12 @@ impl ConnRecorder {
                 let reg = f[0] & 0x7f;
                 if read {
                     self.pending_reads.lock().unwrap().push_back(reg);
+                } else if reg == 0x0B {
+                    // I2S width select: remember it so EP3 blocks get a
+                    // correct frame count.
+                    let value = u32::from_be_bytes([f[1], f[2], f[3], f[4]]);
+                    self.i2s_frame_bytes
+                        .store(if value & 0x40 != 0 { 8 } else { 4 }, Ordering::SeqCst);
                 }
                 let mut l = self.line(if read { "reg_read_req" } else { "reg_write" });
                 l.seq = Some(seq);
@@ -316,13 +327,20 @@ impl ConnRecorder {
             }
             return;
         }
-        let dac = self.decode_regs && ep & 0x7f == 2;
-        let mut l = self.line(if dac { "dac_data" } else { "out" });
+        let (kind, frames) = if self.decode_regs && ep & 0x7f == 2 {
+            ("dac_data", Some(data.len() / 8))
+        } else if self.decode_regs && ep & 0x7f == 3 {
+            let bpf = self.i2s_frame_bytes.load(Ordering::SeqCst);
+            ("i2s_data", Some(data.len() / bpf))
+        } else {
+            ("out", None)
+        };
+        let mut l = self.line(kind);
         l.seq = Some(seq);
         l.dir = Some("out");
         l.ep = Some(format!("0x{ep:02X}"));
         l.len = Some(data.len());
-        l.frames = dac.then_some(data.len() / 8);
+        l.frames = frames;
         l.status = status;
         self.rec.payload(&mut l, data);
         self.rec.emit(&l);

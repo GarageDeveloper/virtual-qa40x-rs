@@ -20,7 +20,8 @@ mod reg {
     pub const OUTPUT_GAIN: u8 = 0x06;
     pub const STREAM_CTRL: u8 = 0x08;
     pub const SAMPLE_RATE: u8 = 0x09;
-    pub const UNKNOWN_INIT_0A: u8 = 0x0A;
+    pub const I2S_CTRL: u8 = 0x0A;
+    pub const I2S_WIDTH: u8 = 0x0B;
     pub const PAGE_SELECT: u8 = 0x0D;
     pub const BOOTLOADER_ENTRY: u8 = 0x0F;
     pub const FIRMWARE_VERSION: u8 = 0x10;
@@ -46,7 +47,8 @@ pub fn register_name(addr: u8) -> Option<&'static str> {
         reg::OUTPUT_GAIN => "OUTPUT_GAIN",
         reg::STREAM_CTRL => "STREAM_CTRL",
         reg::SAMPLE_RATE => "SAMPLE_RATE",
-        reg::UNKNOWN_INIT_0A => "UNKNOWN_INIT_0A",
+        reg::I2S_CTRL => "I2S_CTRL",
+        reg::I2S_WIDTH => "I2S_WIDTH",
         reg::PAGE_SELECT => "PAGE_SELECT",
         reg::BOOTLOADER_ENTRY => "BOOTLOADER_ENTRY",
         reg::TELEM_USB_VOLTAGE => "TELEM_USB_VOLTAGE",
@@ -76,6 +78,19 @@ fn rate_hz(idx: u32) -> u32 {
         2 => 192_000,
         _ => 384_000,
     }
+}
+
+/// Front-panel I2S sample rate: the official app always generates at 48 kHz
+/// and the wire pacing observed on real hardware matches (one 2048-frame
+/// block every 42.7 ms).
+const I2S_RATE_HZ: u64 = 48_000;
+
+/// One active front-panel I2S session (register 0x0A = 1): the host streams
+/// sample blocks on bulk EP3 OUT and the device accepts them at 48 kHz.
+struct I2sRun {
+    started: Instant,
+    /// Frames accepted so far, for real-time pacing of EP3 OUT.
+    consumed: u64,
 }
 
 /// One active streaming session (STREAM_CTRL = 5).
@@ -122,7 +137,10 @@ struct AState {
     input_gain: u32,
     output_gain: u32,
     rate_idx: u32,
-    reg0a: u32,
+    /// Front-panel I2S stream (register 0x0A = 1), for pacing EP3 OUT.
+    i2s: Option<I2sRun>,
+    /// Register 0x0B as written: bit 6 set = 32-bit frames, else 16-bit.
+    i2s_width: u32,
     /// Unmapped registers written by the host: stored and echoed on read.
     misc: HashMap<u8, u32>,
     cal_page: [u8; 512],
@@ -179,7 +197,8 @@ impl Analyzer {
                 input_gain: 7,
                 output_gain: 0,
                 rate_idx: 0,
-                reg0a: 0,
+                i2s: None,
+                i2s_width: 0x40,
                 misc: HashMap::new(),
                 cal_page: opts.cal_page.unwrap_or(*calpage::REAL_QA402_PAGE),
                 page_select: 0x10,
@@ -216,7 +235,8 @@ impl Analyzer {
                 }
             }
             reg::SAMPLE_RATE => st.rate_idx,
-            reg::UNKNOWN_INIT_0A => st.reg0a,
+            reg::I2S_CTRL => u32::from(st.i2s.is_some()),
+            reg::I2S_WIDTH => st.i2s_width,
             reg::FIRMWARE_VERSION => self.fw_version,
             reg::TELEM_USB_VOLTAGE => self.telem(4952.0, 18.0, 7.0),
             reg::TELEM_USB_CURRENT => self.telem(788.0, 12.0, 5.0),
@@ -337,9 +357,29 @@ impl Analyzer {
                 st.rate_idx = idx;
                 info!("sample rate set to {} Hz (index {idx})", rate_hz(idx));
             }
-            reg::UNKNOWN_INIT_0A => {
-                st.reg0a = v;
-                debug!("init write 0x0A = {v}");
+            reg::I2S_CTRL => {
+                // Front-panel I2S start/stop. The official app writes 0 at
+                // every connect (I2S off is part of its safe init), 1 to
+                // start streaming sample blocks on EP3, 0 to stop.
+                if v == 1 && st.i2s.is_none() {
+                    info!(
+                        "front-panel I2S started ({}-bit frames)",
+                        if st.i2s_width & 0x40 != 0 { 32 } else { 16 }
+                    );
+                    st.i2s = Some(I2sRun {
+                        started: Instant::now(),
+                        consumed: 0,
+                    });
+                } else if v == 0 && st.i2s.is_some() {
+                    info!("front-panel I2S stopped");
+                    st.i2s = None;
+                }
+            }
+            reg::I2S_WIDTH => {
+                if v != 0 && v != 0x40 {
+                    warn!("I2S_WIDTH written with 0x{v:X} (observed values: 0x00 = 16-bit, 0x40 = 32-bit)");
+                }
+                st.i2s_width = v;
             }
             reg::PAGE_SELECT => {
                 if v != 1 && !(0x10..=0x1E).contains(&v) {
@@ -569,6 +609,35 @@ impl UsbBackend for Analyzer {
                 self.handle_dac_block(data);
                 Ok(data.len())
             }
+            3 => {
+                // Front-panel I2S data. The device accepts blocks at the I2S
+                // rate — real hardware completes one 2048-frame block every
+                // 42.7 ms — which is what flow-controls the host's ping-pong
+                // writer. The samples themselves go to the (virtual) front
+                // panel: nothing to loop back.
+                let due = {
+                    let mut st = self.st.lock().unwrap();
+                    let bytes_per_frame = if st.i2s_width & 0x40 != 0 { 8 } else { 4 };
+                    let frames = (data.len() / bytes_per_frame) as u64;
+                    match st.i2s.as_mut() {
+                        Some(run) => {
+                            run.consumed += frames;
+                            let elapsed = run.consumed as f64 / I2S_RATE_HZ as f64;
+                            Some(run.started + Duration::from_secs_f64(elapsed))
+                        }
+                        None => {
+                            debug!("EP3 OUT of {} bytes while I2S is stopped", data.len());
+                            None
+                        }
+                    }
+                };
+                if self.opts.realtime {
+                    if let Some(due) = due {
+                        tokio::time::sleep_until(due.into()).await;
+                    }
+                }
+                Ok(data.len())
+            }
             other => {
                 warn!("OUT transfer on unknown endpoint 0x{other:02X}");
                 Err(Stall)
@@ -665,6 +734,13 @@ impl UsbBackend for Analyzer {
                     }
                     return Ok(self.produce_adc_block(&mut st, n));
                 }
+            }
+            // I2S IN (0x83): exposed by real hardware and opened by the
+            // official app, but never observed to carry data — block until
+            // the transfer is cancelled, like a bulk IN with nothing to say.
+            3 => {
+                std::future::pending::<()>().await;
+                unreachable!("pending() never resolves")
             }
             other => {
                 warn!("IN transfer on unknown endpoint 0x{other:02X}");
@@ -765,6 +841,37 @@ mod tests {
         a.handle_frame(&[reg::PAGE_SELECT, 0, 0, 0, 0x10]);
         assert_eq!(read(reg::CALIBRATION), 0);
         assert_eq!(read(reg::CALIBRATION), 0x4C);
+    }
+
+    #[tokio::test]
+    async fn i2s_start_accepts_ep3_blocks_and_stop_reads_back() {
+        let opts = SimOptions {
+            realtime: false,
+            ..SimOptions::default()
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let a = Analyzer::new(Arc::new(opts), 60, tx);
+        let read = |reg: u8| {
+            a.handle_frame(&[0x80 | reg, 0, 0, 0, 0]);
+            let v = a.st.lock().unwrap().replies.pop_front();
+            v.unwrap()
+        };
+        // Width + start, as the official app does it.
+        a.handle_frame(&[reg::I2S_WIDTH, 0, 0, 0, 0x40]);
+        a.handle_frame(&[reg::I2S_CTRL, 0, 0, 0, 1]);
+        assert_eq!(read(reg::I2S_CTRL), 1);
+        // A 2048-frame 32-bit block on EP3 is accepted in full.
+        let block = vec![0u8; 16384];
+        assert_eq!(a.out_transfer(0x03, &block).await, Ok(16384));
+        assert_eq!(
+            a.st.lock().unwrap().i2s.as_ref().unwrap().consumed,
+            2048,
+            "32-bit width: 8 bytes per frame"
+        );
+        // Stop; a stray EP3 block is still accepted (not a stall).
+        a.handle_frame(&[reg::I2S_CTRL, 0, 0, 0, 0]);
+        assert_eq!(read(reg::I2S_CTRL), 0);
+        assert_eq!(a.out_transfer(0x03, &block).await, Ok(16384));
     }
 
     #[test]

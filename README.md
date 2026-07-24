@@ -2,8 +2,9 @@
 
 A virtual **QA402/QA403 audio analyzer**: a Rust USB/IP device server that
 behaves like the real hardware — register bus, ADC/DAC streaming with a
-configurable loopback, factory calibration page, telemetry, and a fake
-firmware upgrade through an emulated NXP KBOOT bootloader.
+configurable loopback, front-panel I2S generation stream, factory
+calibration page, telemetry, and a fake firmware upgrade through an
+emulated NXP KBOOT bootloader.
 
 This project was built to help develop applications that use a QA402/QA403,
 such as our own [**qa40x-rs**](https://github.com/GarageDeveloper/qa40x-rs) —
@@ -197,6 +198,7 @@ since server start), `c` (connection id, one per attach) and a `kind`:
 | `reg_write` | EP1 register frame, decoded: `reg`, `reg_name`, u32 `value`, raw `hex` |
 | `reg_read_req` / `reg_read` | Register read request and its 4-byte reply, paired by FIFO order |
 | `dac_data` / `adc_data` | EP2 stream block: `len`, `frames` (int32 LE stereo, right first), payload as `data_b64` |
+| `i2s_data` | EP3 front-panel I2S block (`frames` follows the 16/32-bit width set via register 0x0B) |
 | `in_req` | An IN URB queued by the client (shows the host's read-ahead behaviour) |
 | `out` / `in` | Raw transfers (bootloader HID reports, unknown endpoints), hex up to 64 bytes then base64 |
 | `unlink` | The client cancelled a pending URB (`victim`, `outcome`) |

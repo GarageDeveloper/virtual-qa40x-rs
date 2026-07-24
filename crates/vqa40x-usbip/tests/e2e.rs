@@ -279,10 +279,12 @@ async fn full_device_lifecycle() {
         0,
         "SET_CONFIGURATION"
     );
-    // Config descriptor: 1 interface, 4 bulk endpoints.
+    // Config descriptor: 1 interface, 6 bulk endpoints (register bus,
+    // audio stream, front-panel I2S), like the real unit.
     let (st, cfg) = c.control_in(0x80, 6, 0x0200, 0, 255).await;
     assert_eq!(st, 0);
     assert_eq!(cfg[4], 1);
+    assert_eq!(cfg[9 + 4], 6, "bNumEndpoints");
     // String descriptors (nusb serves product/serial from these).
     let (st, s) = c.control_in(0x80, 6, 0x0303, 0x0409, 255).await;
     assert_eq!(st, 0);
@@ -685,6 +687,12 @@ async fn recorder_captures_a_session() {
     assert_eq!(st, 0);
     assert_eq!(adc.len(), 16384);
     c.reg_write(0x08, 0).await; // STREAM_CTRL stop
+
+    // Front-panel I2S: width, start, one 32-bit block on EP3, stop.
+    c.reg_write(0x0B, 0x40).await;
+    c.reg_write(0x0A, 1).await;
+    assert_eq!(c.bulk_out(3, &vec![0u8; 16384]).await, 0);
+    c.reg_write(0x0A, 0).await;
     drop(c);
 
     // Let the server notice the disconnect and log the detach.
@@ -738,6 +746,12 @@ async fn recorder_captures_a_session() {
     assert!(adc_ev[0]["data_b64"].is_string());
     // Every IN completion was preceded by its queued request.
     assert!(find("in_req").len() >= 2);
+
+    // The I2S block was decoded with the width learned from the 0x0B write.
+    let i2s = find("i2s_data");
+    assert_eq!(i2s.len(), 1);
+    assert_eq!(i2s[0]["len"], 16384);
+    assert_eq!(i2s[0]["frames"], 2048);
 
     // The disconnect is on record.
     assert_eq!(lines.last().unwrap()["kind"], "detach");
