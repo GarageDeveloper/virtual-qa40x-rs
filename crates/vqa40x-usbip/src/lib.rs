@@ -11,9 +11,11 @@
 //! enumerates the new persona.
 
 pub mod proto;
+pub mod record;
 
 use log::{debug, info, warn};
 use proto::*;
+use record::{ConnRecorder, Recorder};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -31,6 +33,16 @@ pub async fn serve(sim: Simulator, listener: TcpListener) -> std::io::Result<()>
 /// Serve a set of simulated devices on an already-bound listener, forever.
 /// Each device is exported under its own busid; busids must be unique.
 pub async fn serve_many(devices: Vec<Simulator>, listener: TcpListener) -> std::io::Result<()> {
+    serve_many_recorded(devices, listener, None).await
+}
+
+/// [`serve_many`] with an optional USB exchange recorder ([`record`]): every
+/// URB of every attached client is captured to its JSONL log.
+pub async fn serve_many_recorded(
+    devices: Vec<Simulator>,
+    listener: TcpListener,
+    recorder: Option<Arc<Recorder>>,
+) -> std::io::Result<()> {
     let devices = Arc::new(devices);
     loop {
         let (socket, peer) = listener.accept().await?;
@@ -38,8 +50,9 @@ pub async fn serve_many(devices: Vec<Simulator>, listener: TcpListener) -> std::
         // which would flood the log at info.
         debug!("connection from {peer}");
         let devices = devices.clone();
+        let recorder = recorder.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(devices, socket).await {
+            if let Err(e) = handle_connection(devices, socket, recorder).await {
                 debug!("connection {peer} ended: {e}");
             } else {
                 debug!("connection {peer} closed");
@@ -51,6 +64,7 @@ pub async fn serve_many(devices: Vec<Simulator>, listener: TcpListener) -> std::
 async fn handle_connection(
     devices: Arc<Vec<Simulator>>,
     mut socket: TcpStream,
+    recorder: Option<Arc<Recorder>>,
 ) -> std::io::Result<()> {
     socket.set_nodelay(true)?;
     // Detect dead peers (killed VM, dropped network): a vanished client must
@@ -131,7 +145,10 @@ async fn handle_connection(
                 sim.busid()
             );
 
-            let result = urb_phase(sim, backend, socket).await;
+            let crec = recorder
+                .as_ref()
+                .map(|r| r.connection(sim.busid(), socket.peer_addr().ok(), &summary));
+            let result = urb_phase(sim, backend, socket, crec).await;
             sim.release_import();
             result
         }
@@ -157,6 +174,7 @@ async fn urb_phase(
     sim: &Simulator,
     backend: Arc<dyn UsbBackend>,
     socket: TcpStream,
+    crec: Option<Arc<ConnRecorder>>,
 ) -> std::io::Result<()> {
     let (mut rd, mut wr) = socket.into_split();
 
@@ -187,13 +205,24 @@ async fn urb_phase(
             r = rd.read_exact(&mut hdr) => r,
             _ = generation.changed() => {
                 info!("device rebooted — detaching client");
+                if let Some(rec) = &crec {
+                    rec.detach("device_rebooted");
+                }
                 break Ok(());
             }
-            _ = conn_token.cancelled() => break Ok(()),
+            _ = conn_token.cancelled() => {
+                if let Some(rec) = &crec {
+                    rec.detach("connection_closed");
+                }
+                break Ok(());
+            }
         };
         if let Err(e) = read {
             // Client detached (usbip detach / vhci teardown / dead peer).
             info!("client detached ({})", e.kind());
+            if let Some(rec) = &crec {
+                rec.detach("client_detached");
+            }
             break if e.kind() == std::io::ErrorKind::UnexpectedEof {
                 Ok(())
             } else {
@@ -212,17 +241,23 @@ async fn urb_phase(
                 }
 
                 if h.ep == 0 {
-                    handle_control(&backend, &h, &out_data, &tx).await;
+                    handle_control(&backend, &h, &out_data, &tx, &crec).await;
                 } else if h.direction == DIR_OUT {
                     let ep_addr = (h.ep & 0x0f) as u8;
                     let status = match backend.out_transfer(ep_addr, &out_data).await {
                         Ok(_) => ST_OK,
                         Err(Stall) => ST_EPIPE,
                     };
+                    if let Some(rec) = &crec {
+                        rec.out(h.seqnum, ep_addr, &out_data, status != ST_OK);
+                    }
                     let _ = tx.send(ret_submit(h.seqnum, status, None, out_data.len()));
                 } else {
                     // Blocking IN: dispatch to the endpoint's FIFO worker.
                     let ep_addr = 0x80 | (h.ep & 0x0f) as u8;
+                    if let Some(rec) = &crec {
+                        rec.in_req(h.seqnum, ep_addr, tlen);
+                    }
                     let token = CancellationToken::new();
                     pending.lock().unwrap().insert(h.seqnum, token);
                     let worker = in_workers.entry(ep_addr).or_insert_with(|| {
@@ -231,6 +266,7 @@ async fn urb_phase(
                             tx.clone(),
                             pending.clone(),
                             conn_token.clone(),
+                            crec.clone(),
                         )
                     });
                     let _ = worker.send(InJob {
@@ -243,6 +279,9 @@ async fn urb_phase(
             USBIP_CMD_UNLINK => {
                 let victim = h.unlink_seqnum();
                 let token = pending.lock().unwrap().remove(&victim);
+                if let Some(rec) = &crec {
+                    rec.unlink(h.seqnum, victim, token.is_some());
+                }
                 match token {
                     Some(t) => {
                         t.cancel();
@@ -257,6 +296,9 @@ async fn urb_phase(
             }
             other => {
                 warn!("unknown URB command 0x{other:08X} — closing");
+                if let Some(rec) = &crec {
+                    rec.detach("protocol_error");
+                }
                 break Ok(());
             }
         }
@@ -276,6 +318,7 @@ fn spawn_in_worker(
     tx: mpsc::UnboundedSender<Vec<u8>>,
     pending: Pending,
     conn_token: CancellationToken,
+    crec: Option<Arc<ConnRecorder>>,
 ) -> mpsc::UnboundedSender<InJob> {
     let (job_tx, mut job_rx) = mpsc::unbounded_channel::<InJob>();
     tokio::spawn(async move {
@@ -289,6 +332,9 @@ fn spawn_in_worker(
                 r = backend.in_transfer(job.ep_addr, job.len) => {
                     // Whoever removes the seqnum from the map replies.
                     if pending.lock().unwrap().remove(&job.seqnum).is_some() {
+                        if let Some(rec) = &crec {
+                            rec.in_result(job.seqnum, job.ep_addr, &r);
+                        }
                         let pkt = match r {
                             Ok(data) => {
                                 let n = data.len().min(job.len);
@@ -312,9 +358,13 @@ async fn handle_control(
     h: &UrbHeader,
     out_data: &[u8],
     tx: &mpsc::UnboundedSender<Vec<u8>>,
+    crec: &Option<Arc<ConnRecorder>>,
 ) {
     let setup = SetupPacket::parse(&h.setup());
     let result = backend.control(setup, out_data).await;
+    if let Some(rec) = crec {
+        rec.control(h.seqnum, &setup, out_data, &result);
+    }
     let pkt = match (h.direction == DIR_IN, result) {
         (true, Ok(data)) => {
             let n = data.len().min(h.transfer_length());
