@@ -39,9 +39,11 @@ impl Model {
     }
 
     /// Default word served by register 0x1C — unlike 0x1B this one differs
-    /// per model. These are the values the official app's device-info
-    /// diagnostics expect for each model (it reads 0x1B/0x1C and flags a
-    /// mismatch); informational only as far as we have observed.
+    /// per model. The QA402 word is wire-confirmed by a USB capture of a
+    /// real unit (the official app's device-info screen reads it back and
+    /// tags it "[MATCH]"); the QA403 word is the value that same screen
+    /// expects for a QA403, not yet confirmed on a real unit. Informational
+    /// only as far as observed.
     pub fn default_capability2(&self) -> u32 {
         match self {
             Model::Qa402 => 0x02A3_5B03,
