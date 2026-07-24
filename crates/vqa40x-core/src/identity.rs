@@ -278,8 +278,10 @@ fn msos20(vendor_code: u8) -> MsOs20 {
     }
 }
 
-/// Analyzer persona: vendor-specific interface with the four bulk endpoints
-/// the QA40x exposes (0x01/0x81 register bus, 0x02/0x82 audio stream).
+/// Analyzer persona: vendor-specific interface with the six bulk endpoints
+/// the QA40x exposes (0x01/0x81 register bus, 0x02/0x82 audio stream,
+/// 0x03/0x83 front-panel I2S), in the exact order a real QA402's config
+/// descriptor lists them.
 pub fn analyzer_identity(vid: u16, pid: u16, product: &str, serial: &str) -> Identity {
     let class = (0u8, 0u8, 0u8); // class defined at interface level
     let iface_class = (0xffu8, 0x00u8, 0x00u8);
@@ -292,13 +294,13 @@ pub fn analyzer_identity(vid: u16, pid: u16, product: &str, serial: &str) -> Ide
         4, // INTERFACE
         0,
         0, // number, alternate
-        4, // bNumEndpoints
+        6, // bNumEndpoints
         iface_class.0,
         iface_class.1,
         iface_class.2,
         0,
     ]);
-    for ep in [0x01u8, 0x81, 0x02, 0x82] {
+    for ep in [0x81u8, 0x01, 0x82, 0x02, 0x83, 0x03] {
         config.extend_from_slice(&endpoint_descriptor(ep, 0x02 /* bulk */, 512, 0));
     }
     let total = config.len() as u16;
