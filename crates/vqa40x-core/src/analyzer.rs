@@ -698,12 +698,12 @@ mod tests {
             v.unwrap()
         };
         let qa402 = SimOptions::default();
-        assert_eq!(read(qa402), 0x02A3_6083);
+        assert_eq!(read(qa402), 0x02A3_5B03);
         let qa403 = SimOptions {
             model: Model::Qa403,
             ..SimOptions::default()
         };
-        assert_eq!(read(qa403), 0x7F32_0BB0);
+        assert_eq!(read(qa403), 0x7F31_BD30);
         let forced = SimOptions {
             model: Model::Qa403,
             capability2: Some(0x1234_5678),

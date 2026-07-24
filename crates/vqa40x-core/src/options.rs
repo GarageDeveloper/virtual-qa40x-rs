@@ -44,8 +44,8 @@ impl Model {
     /// mismatch); informational only as far as we have observed.
     pub fn default_capability2(&self) -> u32 {
         match self {
-            Model::Qa402 => 0x02A3_6083,
-            Model::Qa403 => 0x7F32_0BB0,
+            Model::Qa402 => 0x02A3_5B03,
+            Model::Qa403 => 0x7F31_BD30,
         }
     }
 }
