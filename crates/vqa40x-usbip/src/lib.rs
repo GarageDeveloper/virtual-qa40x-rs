@@ -166,6 +166,18 @@ struct InJob {
     len: usize,
 }
 
+/// An OUT transfer handed to a per-endpoint worker. OUT is workered too:
+/// a paced endpoint (EP3 front-panel I2S accepts one block per 42.7 ms)
+/// must not stall the URB loop, or every register URB queued behind it
+/// inherits the pacing delay — the host app's short keepalive/telemetry
+/// timeouts then expire and it declares the device gone. Real USB runs
+/// endpoints concurrently; only per-endpoint ordering is guaranteed.
+struct OutJob {
+    seqnum: u32,
+    ep_addr: u8,
+    data: Vec<u8>,
+}
+
 /// Authority deciding who replies for a seqnum: pending URBs own a
 /// cancellation token; completion and unlink race through this map.
 type Pending = Arc<Mutex<HashMap<u32, CancellationToken>>>;
@@ -192,9 +204,11 @@ async fn urb_phase(
     });
 
     let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-    // Per-endpoint-address FIFO workers for blocking IN transfers, so
-    // completions keep submission order per endpoint.
+    // Per-endpoint-address FIFO workers, so completions keep submission
+    // order per endpoint while endpoints stay concurrent with each other
+    // (see [`OutJob`] for why OUT must not run inline in this loop).
     let mut in_workers: HashMap<u8, mpsc::UnboundedSender<InJob>> = HashMap::new();
+    let mut out_workers: HashMap<u8, mpsc::UnboundedSender<OutJob>> = HashMap::new();
 
     // The device "reboots" (persona switch) → drop the connection.
     let mut generation = sim.generation();
@@ -244,14 +258,22 @@ async fn urb_phase(
                     handle_control(&backend, &h, &out_data, &tx, &crec).await;
                 } else if h.direction == DIR_OUT {
                     let ep_addr = (h.ep & 0x0f) as u8;
-                    let status = match backend.out_transfer(ep_addr, &out_data).await {
-                        Ok(_) => ST_OK,
-                        Err(Stall) => ST_EPIPE,
-                    };
-                    if let Some(rec) = &crec {
-                        rec.out(h.seqnum, ep_addr, &out_data, status != ST_OK);
-                    }
-                    let _ = tx.send(ret_submit(h.seqnum, status, None, out_data.len()));
+                    let token = CancellationToken::new();
+                    pending.lock().unwrap().insert(h.seqnum, token);
+                    let worker = out_workers.entry(ep_addr).or_insert_with(|| {
+                        spawn_out_worker(
+                            backend.clone(),
+                            tx.clone(),
+                            pending.clone(),
+                            conn_token.clone(),
+                            crec.clone(),
+                        )
+                    });
+                    let _ = worker.send(OutJob {
+                        seqnum: h.seqnum,
+                        ep_addr,
+                        data: out_data,
+                    });
                 } else {
                     // Blocking IN: dispatch to the endpoint's FIFO worker.
                     let ep_addr = 0x80 | (h.ep & 0x0f) as u8;
@@ -306,6 +328,7 @@ async fn urb_phase(
 
     conn_token.cancel();
     drop(in_workers);
+    drop(out_workers);
     drop(tx);
     let _ = writer.await;
     result
@@ -343,6 +366,45 @@ fn spawn_in_worker(
                             Err(Stall) => ret_submit(job.seqnum, ST_EPIPE, Some(&[]), 0),
                         };
                         let _ = tx.send(pkt);
+                    }
+                }
+                _ = token.cancelled() => { /* RET_UNLINK already sent */ }
+                _ = conn_token.cancelled() => break,
+            }
+        }
+    });
+    job_tx
+}
+
+/// One FIFO worker per OUT endpoint: transfers complete in submission order
+/// per endpoint, and a paced endpoint (I2S) never delays the others.
+fn spawn_out_worker(
+    backend: Arc<dyn UsbBackend>,
+    tx: mpsc::UnboundedSender<Vec<u8>>,
+    pending: Pending,
+    conn_token: CancellationToken,
+    crec: Option<Arc<ConnRecorder>>,
+) -> mpsc::UnboundedSender<OutJob> {
+    let (job_tx, mut job_rx) = mpsc::unbounded_channel::<OutJob>();
+    tokio::spawn(async move {
+        while let Some(job) = job_rx.recv().await {
+            let token = match pending.lock().unwrap().get(&job.seqnum) {
+                Some(t) => t.clone(),
+                // Unlinked before we got to it.
+                None => continue,
+            };
+            tokio::select! {
+                r = backend.out_transfer(job.ep_addr, &job.data) => {
+                    // Whoever removes the seqnum from the map replies.
+                    if pending.lock().unwrap().remove(&job.seqnum).is_some() {
+                        let status = match r {
+                            Ok(_) => ST_OK,
+                            Err(Stall) => ST_EPIPE,
+                        };
+                        if let Some(rec) = &crec {
+                            rec.out(job.seqnum, job.ep_addr, &job.data, status != ST_OK);
+                        }
+                        let _ = tx.send(ret_submit(job.seqnum, status, None, job.data.len()));
                     }
                 }
                 _ = token.cancelled() => { /* RET_UNLINK already sent */ }
