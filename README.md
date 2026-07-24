@@ -163,6 +163,13 @@ vqa40x --cal-page mypage.bin      # serve another unit's page (CRC checked, warn
 The audio engine reads its ADC/DAC trims from whatever page is served, so a
 calibrated host always measures a loopback of exactly `--loopback-gain-db`.
 
+Register 0x0D is modeled as the general page selector it is on hardware:
+`0x10 + 2*page` selects a flash page (page 0 = the calibration page, pages
+1–3 read as zeros like a real unit) and `1` selects the firmware trace
+buffer (length in 0x15, read out via 0x14 — the official app's "Query
+Hardware for Firmware State" button gets the same empty trace a healthy
+unit returns).
+
 ## Recording USB exchanges
 
 `--record <path>` captures everything the attached client sends and everything

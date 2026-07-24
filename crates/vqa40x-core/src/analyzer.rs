@@ -21,13 +21,14 @@ mod reg {
     pub const STREAM_CTRL: u8 = 0x08;
     pub const SAMPLE_RATE: u8 = 0x09;
     pub const UNKNOWN_INIT_0A: u8 = 0x0A;
-    pub const CAL_PAGE_SELECT: u8 = 0x0D;
+    pub const PAGE_SELECT: u8 = 0x0D;
     pub const BOOTLOADER_ENTRY: u8 = 0x0F;
     pub const FIRMWARE_VERSION: u8 = 0x10;
     pub const TELEM_USB_VOLTAGE: u8 = 0x11;
     pub const TELEM_USB_CURRENT: u8 = 0x12;
     pub const TELEM_ISO_CURRENT: u8 = 0x13;
-    pub const TELEM_EXTRA: u8 = 0x15;
+    pub const TRACE_READ: u8 = 0x14;
+    pub const TRACE_LEN: u8 = 0x15;
     pub const TELEM_TEMPERATURE: u8 = 0x16;
     pub const CALIBRATION: u8 = 0x19;
     pub const CAPABILITY: u8 = 0x1B;
@@ -46,12 +47,13 @@ pub fn register_name(addr: u8) -> Option<&'static str> {
         reg::STREAM_CTRL => "STREAM_CTRL",
         reg::SAMPLE_RATE => "SAMPLE_RATE",
         reg::UNKNOWN_INIT_0A => "UNKNOWN_INIT_0A",
-        reg::CAL_PAGE_SELECT => "CAL_PAGE_SELECT",
+        reg::PAGE_SELECT => "PAGE_SELECT",
         reg::BOOTLOADER_ENTRY => "BOOTLOADER_ENTRY",
         reg::TELEM_USB_VOLTAGE => "TELEM_USB_VOLTAGE",
         reg::TELEM_USB_CURRENT => "TELEM_USB_CURRENT",
         reg::TELEM_ISO_CURRENT => "TELEM_ISO_CURRENT",
-        reg::TELEM_EXTRA => "TELEM_EXTRA",
+        reg::TRACE_READ => "TRACE_READ",
+        reg::TRACE_LEN => "TRACE_LEN",
         reg::TELEM_TEMPERATURE => "TELEM_TEMPERATURE",
         reg::FIRMWARE_VERSION => "FIRMWARE_VERSION",
         reg::CALIBRATION => "CALIBRATION",
@@ -124,7 +126,13 @@ struct AState {
     /// Unmapped registers written by the host: stored and echoed on read.
     misc: HashMap<u8, u32>,
     cal_page: [u8; 512],
-    cal_ptr: usize,
+    /// Register 0x0D: what reads of 0x19/0x14 walk through. 1 selects the
+    /// firmware trace buffer, 0x10 + 2*page a flash page (page 0 = factory
+    /// calibration). Wire-observed via the official app's About screen.
+    page_select: u32,
+    /// Sequential read pointer into the selected page/buffer, reset by every
+    /// 0x0D write.
+    read_ptr: usize,
     /// Bootloader-entry latch: 1 after 0xDEADBEEF, waiting for 0xCAFEBABE.
     boot_stage: u8,
     last_stop: Option<Instant>,
@@ -174,7 +182,8 @@ impl Analyzer {
                 reg0a: 0,
                 misc: HashMap::new(),
                 cal_page: opts.cal_page.unwrap_or(*calpage::REAL_QA402_PAGE),
-                cal_ptr: 0,
+                page_select: 0x10,
+                read_ptr: 0,
                 boot_stage: 0,
                 last_stop: None,
                 replies: VecDeque::new(),
@@ -212,21 +221,35 @@ impl Analyzer {
             reg::TELEM_USB_VOLTAGE => self.telem(4952.0, 18.0, 7.0),
             reg::TELEM_USB_CURRENT => self.telem(788.0, 12.0, 5.0),
             reg::TELEM_ISO_CURRENT => self.telem(534.0, 8.0, 6.0),
-            reg::TELEM_EXTRA => 0,
+            // Firmware trace buffer, dumped by the official app's "Query
+            // Hardware for Firmware State" button: 0x0D=1 selects it, 0x15 is
+            // its byte length, 0x14 reads it out one u32 at a time. A real
+            // unit answered 0x418 bytes of zeros (empty trace); serve the
+            // same picture of health.
+            reg::TRACE_LEN => 0x418,
+            reg::TRACE_READ => {
+                st.read_ptr += 4;
+                0
+            }
             reg::TELEM_TEMPERATURE => self.telem(250.0, 4.0, 60.0),
             reg::CALIBRATION => {
-                // Each read returns the next 4 page bytes. The wire carries
-                // them as a big-endian u32 that the host re-emits little-
-                // endian, so pack the page chunk as LE here — the host's page
-                // then matches ours byte for byte.
-                let p = st.cal_ptr % 512;
+                // Each read returns the next 4 bytes of the selected flash
+                // page. Only page 0 (select 0x10) holds data — the factory
+                // calibration page; a real unit serves zeros for pages 1..=3.
+                // The wire carries the bytes as a big-endian u32 that the
+                // host re-emits little-endian, so pack the chunk as LE here —
+                // the host's page then matches ours byte for byte.
+                let p = st.read_ptr % 512;
+                st.read_ptr = (st.read_ptr + 4) % 512;
+                if st.page_select != 0x10 {
+                    return 0;
+                }
                 let chunk = [
                     st.cal_page[p],
                     st.cal_page[(p + 1) % 512],
                     st.cal_page[(p + 2) % 512],
                     st.cal_page[(p + 3) % 512],
                 ];
-                st.cal_ptr = (st.cal_ptr + 4) % 512;
                 u32::from_le_bytes(chunk)
             }
             reg::CAPABILITY => self.opts.capability,
@@ -318,11 +341,12 @@ impl Analyzer {
                 st.reg0a = v;
                 debug!("init write 0x0A = {v}");
             }
-            reg::CAL_PAGE_SELECT => {
-                if v != 0x10 {
-                    warn!("CAL_PAGE_SELECT written with 0x{v:X} (real app always writes 0x10)");
+            reg::PAGE_SELECT => {
+                if v != 1 && !(0x10..=0x1E).contains(&v) {
+                    warn!("PAGE_SELECT written with 0x{v:X} (expected 1 or 0x10 + 2*page)");
                 }
-                st.cal_ptr = 0;
+                st.page_select = v;
+                st.read_ptr = 0;
             }
             reg::BOOTLOADER_ENTRY => {
                 // Strict two-magic unlock, order-sensitive like the notes assume.
@@ -710,6 +734,37 @@ mod tests {
             ..SimOptions::default()
         };
         assert_eq!(read(forced), 0x1234_5678);
+    }
+
+    #[test]
+    fn page_select_serves_cal_page_zeros_and_trace() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let a = Analyzer::new(Arc::new(SimOptions::default()), 60, tx);
+        let read = |reg: u8| {
+            a.handle_frame(&[0x80 | reg, 0, 0, 0, 0]);
+            let v = a.st.lock().unwrap().replies.pop_front();
+            v.unwrap()
+        };
+        // Page 0 (0x0D = 0x10): the factory calibration page. Its head is
+        // 00 00 00 00 4C ... — so word 0 reads 0 and word 1 reads 0x4C.
+        a.handle_frame(&[reg::PAGE_SELECT, 0, 0, 0, 0x10]);
+        assert_eq!(read(reg::CALIBRATION), 0);
+        assert_eq!(read(reg::CALIBRATION), 0x4C);
+        // Pages 1..=3 (0x12/0x14/0x16): zeros, like real hardware.
+        a.handle_frame(&[reg::PAGE_SELECT, 0, 0, 0, 0x12]);
+        for _ in 0..8 {
+            assert_eq!(read(reg::CALIBRATION), 0);
+        }
+        // Trace buffer (0x0D = 1): 0x418 zero bytes, a healthy unit's dump.
+        a.handle_frame(&[reg::PAGE_SELECT, 0, 0, 0, 1]);
+        assert_eq!(read(reg::TRACE_LEN), 0x418);
+        for _ in 0..(0x418 / 4) {
+            assert_eq!(read(reg::TRACE_READ), 0);
+        }
+        // Back to page 0: the pointer was reset, the page reads again from 0.
+        a.handle_frame(&[reg::PAGE_SELECT, 0, 0, 0, 0x10]);
+        assert_eq!(read(reg::CALIBRATION), 0);
+        assert_eq!(read(reg::CALIBRATION), 0x4C);
     }
 
     #[test]
