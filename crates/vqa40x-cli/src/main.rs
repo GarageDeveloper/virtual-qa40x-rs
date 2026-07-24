@@ -63,7 +63,7 @@ struct Args {
 
     /// Value served by register 0x1C, the second capability-style word (hex
     /// or decimal). Default: the model's word as expected by the official
-    /// app's diagnostics (QA402 0x02A36083, QA403 0x7F320BB0).
+    /// app's diagnostics (QA402 0x02A35B03, QA403 0x7F31BD30).
     #[arg(long, value_parser = parse_u32)]
     capability2: Option<u32>,
 

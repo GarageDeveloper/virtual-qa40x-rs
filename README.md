@@ -66,7 +66,7 @@ hardware there):
 | `--serial XXXX_XXXX` | USB serial; default: a random one per launch |
 | `--fw-version <n>` | Firmware version reported by register 0x10 (real units: 60) |
 | `--capability <word>` | Capability word served by register 0x1B (hex ok); default: the value captured on a real QA402 |
-| `--capability2 <word>` | Second capability word, register 0x1C; default per model (QA402 0x02A36083, QA403 0x7F320BB0) |
+| `--capability2 <word>` | Second capability word, register 0x1C; default per model (QA402 0x02A35B03, QA403 0x7F31BD30) |
 | `--listen <addr:port>` | USB/IP listen address (default `0.0.0.0:3240`) |
 | `--gen 1000:-10[:left]` | Independent sine at the input (Hz : dBV [: channel]) |
 | `--noise-dbfs`, `--h2-dbc`, `--h3-dbc` | Noise floor and harmonic distortion |
