@@ -5,6 +5,10 @@ behaves like the real hardware — register bus, ADC/DAC streaming with a
 configurable loopback, factory calibration page, telemetry, and a fake
 firmware upgrade through an emulated NXP KBOOT bootloader.
 
+This project was built to help develop applications that use a QA402/QA403,
+such as our own [**qa40x-rs**](https://github.com/GarageDeveloper/qa40x-rs) —
+an open-source control & analysis app for these analyzers.
+
 Use it to develop and test QA40x host software without an analyzer on the
 bench: attach the virtual device from Linux (`vhci-hcd`) or Windows
 (usbip-win2) and point your app at it — including the official QA40x
