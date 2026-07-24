@@ -643,3 +643,108 @@ async fn boot_bootloader_recovery() {
     assert_eq!((vid, pid), (0x16C0, 0x4E37), "recovered to the analyzer");
     assert_eq!(c.reg_read(0x10).await, 60, "firmware after recovery flash");
 }
+
+/// The USB exchange recorder captures an attached client's full traffic —
+/// enumeration, register bus, streaming — as decoded, replayable JSONL.
+#[tokio::test(flavor = "multi_thread")]
+async fn recorder_captures_a_session() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let log_path =
+        std::env::temp_dir().join(format!("vqa40x-e2e-usb-log-{}.jsonl", std::process::id()));
+    let _ = std::fs::remove_file(&log_path);
+    let recorder = vqa40x_usbip::record::Recorder::create(&log_path, true).unwrap();
+
+    let opts = SimOptions {
+        realtime: false,
+        latency_samples: LATENCY,
+        noise_dbfs: -200.0,
+        serial: "AB12_CD34".to_string(),
+        ..SimOptions::default()
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let sim = Simulator::new(opts);
+    tokio::spawn(vqa40x_usbip::serve_many_recorded(
+        vec![sim],
+        listener,
+        Some(recorder),
+    ));
+
+    let (mut c, _vid, _pid) = Client::attach(addr, "1-1").await;
+
+    // Enumeration, a register write + read, one streamed block each way.
+    let (st, _dev) = c.control_in(0x80, 6, 0x0100, 0, 18).await;
+    assert_eq!(st, 0);
+    c.reg_write(0x09, 1).await; // SAMPLE_RATE
+    assert_eq!(c.reg_read(0x10).await, 60); // FIRMWARE_VERSION
+    c.reg_write(0x08, 5).await; // STREAM_CTRL start
+    let tone = encode_stereo_wire(&vec![0.5f32; 2048]);
+    assert_eq!(c.bulk_out(2, &tone).await, 0);
+    let (st, adc) = c.bulk_in(2, 16384).await;
+    assert_eq!(st, 0);
+    assert_eq!(adc.len(), 16384);
+    c.reg_write(0x08, 0).await; // STREAM_CTRL stop
+    drop(c);
+
+    // Let the server notice the disconnect and log the detach.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&log_path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    std::fs::remove_file(&log_path).unwrap();
+
+    assert_eq!(lines[0]["kind"], "session");
+    assert_eq!(lines[0]["format"], "vqa40x-usb-log/1");
+    assert_eq!(lines[1]["kind"], "attach");
+    assert_eq!(lines[1]["busid"], "1-1");
+    assert_eq!(lines[1]["persona"], "analyzer");
+
+    let find = |kind: &str| -> Vec<&serde_json::Value> {
+        lines.iter().filter(|l| l["kind"] == kind).collect()
+    };
+
+    // Enumeration decoded.
+    let controls = find("control");
+    assert!(controls
+        .iter()
+        .any(|l| l["request_name"] == "GET_DESCRIPTOR" && l["len"] == 18));
+
+    // Register bus decoded: the SAMPLE_RATE write, and the FIRMWARE_VERSION
+    // read request paired with its 4-byte reply.
+    assert!(find("reg_write")
+        .iter()
+        .any(|l| l["reg_name"] == "SAMPLE_RATE" && l["value"] == 1));
+    assert!(find("reg_read_req")
+        .iter()
+        .any(|l| l["reg_name"] == "FIRMWARE_VERSION"));
+    assert!(find("reg_read")
+        .iter()
+        .any(|l| l["reg_name"] == "FIRMWARE_VERSION" && l["value"] == 60));
+
+    // Stream payloads captured in full, both directions.
+    let dac = find("dac_data");
+    assert_eq!(dac.len(), 1);
+    assert_eq!(dac[0]["len"], 2048 * 8);
+    assert_eq!(dac[0]["frames"], 2048);
+    assert!(dac[0]["data_b64"].is_string());
+    let adc_ev = find("adc_data");
+    assert_eq!(adc_ev.len(), 1);
+    assert_eq!(adc_ev[0]["len"], 16384);
+    assert_eq!(adc_ev[0]["frames"], 2048);
+    assert!(adc_ev[0]["data_b64"].is_string());
+    // Every IN completion was preceded by its queued request.
+    assert!(find("in_req").len() >= 2);
+
+    // The disconnect is on record.
+    assert_eq!(lines.last().unwrap()["kind"], "detach");
+    assert_eq!(lines.last().unwrap()["reason"], "client_detached");
+
+    // Sequence numbers are contiguous from 1 (no lost lines).
+    for (i, l) in lines[1..].iter().enumerate() {
+        assert_eq!(l["n"], (i + 1) as u64);
+    }
+}

@@ -35,6 +35,32 @@ mod reg {
     pub const STREAM_STATUS: u8 = 0x1E;
 }
 
+/// Human-readable name for a register address (for logs and the USB exchange
+/// recorder). `None` for addresses without a known name.
+pub fn register_name(addr: u8) -> Option<&'static str> {
+    Some(match addr {
+        reg::LINK_KEEPALIVE => "LINK_KEEPALIVE",
+        reg::INPUT_GAIN => "INPUT_GAIN",
+        reg::OUTPUT_GAIN => "OUTPUT_GAIN",
+        reg::STREAM_CTRL => "STREAM_CTRL",
+        reg::SAMPLE_RATE => "SAMPLE_RATE",
+        reg::UNKNOWN_INIT_0A => "UNKNOWN_INIT_0A",
+        reg::CAL_PAGE_SELECT => "CAL_PAGE_SELECT",
+        reg::BOOTLOADER_ENTRY => "BOOTLOADER_ENTRY",
+        reg::TELEM_USB_VOLTAGE => "TELEM_USB_VOLTAGE",
+        reg::TELEM_USB_CURRENT => "TELEM_USB_CURRENT",
+        reg::TELEM_ISO_CURRENT => "TELEM_ISO_CURRENT",
+        reg::TELEM_EXTRA => "TELEM_EXTRA",
+        reg::TELEM_TEMPERATURE => "TELEM_TEMPERATURE",
+        reg::FIRMWARE_VERSION => "FIRMWARE_VERSION",
+        reg::CALIBRATION => "CALIBRATION",
+        reg::CAPABILITY => "CAPABILITY",
+        reg::SERIAL_NUMBER => "SERIAL_NUMBER",
+        reg::STREAM_STATUS => "STREAM_STATUS",
+        _ => return None,
+    })
+}
+
 const BOOTLOADER_MAGIC_1: u32 = 0xDEAD_BEEF;
 const BOOTLOADER_MAGIC_2: u32 = 0xCAFE_BABE;
 

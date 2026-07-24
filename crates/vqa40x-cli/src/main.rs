@@ -135,6 +135,18 @@ struct Args {
     #[arg(long)]
     boot_bootloader: bool,
 
+    /// Record every USB exchange (all devices, all clients) to a JSONL log:
+    /// register frames decoded next to their raw hex, stream payloads as
+    /// base64. A file path, or an existing directory for an auto-named
+    /// usb-<unix>.jsonl. See "Recording USB exchanges" in the README.
+    #[arg(long)]
+    record: Option<PathBuf>,
+
+    /// What --record keeps of stream/raw payloads: "full" embeds them
+    /// (base64/hex), "summary" keeps only their lengths.
+    #[arg(long, default_value = "full", value_parser = ["full", "summary"])]
+    record_data: String,
+
     /// Load a multi-device environment from a JSON file (see
     /// examples/devices.json). Each device gets its own busid and serial;
     /// this overrides the single-device flags above.
@@ -387,8 +399,18 @@ async fn main() -> Result<()> {
         .collect();
     info!("attach: usbip attach -r <this-host> -b <busid>  (see busids above)");
 
+    let recorder = match &args.record {
+        Some(path) => {
+            let rec = vqa40x_usbip::record::Recorder::create(path, args.record_data == "full")
+                .with_context(|| format!("cannot open USB log {}", path.display()))?;
+            info!("recording USB exchanges to {}", rec.path().display());
+            Some(rec)
+        }
+        None => None,
+    };
+
     tokio::select! {
-        r = vqa40x_usbip::serve_many(devices, listener) => r.context("server error")?,
+        r = vqa40x_usbip::serve_many_recorded(devices, listener, recorder) => r.context("server error")?,
         _ = tokio::signal::ctrl_c() => info!("interrupted — shutting down"),
     }
     Ok(())

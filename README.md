@@ -72,6 +72,8 @@ hardware there):
 | `--no-loopback`, `--loopback-gain-db` | DAC→ADC loopback (on by default, 0 dB) |
 | `--latency-samples <n>` | Loopback round-trip latency |
 | `--no-realtime` | Serve samples as fast as asked (CI/tests) instead of pacing at the sample rate |
+| `--record <path>` | Record every USB exchange to a JSONL log (see below) |
+| `--record-data full\|summary` | Keep stream payloads in the log, or only their lengths |
 
 Logs: `RUST_LOG=vqa40x=debug,info` shows every register operation.
 
@@ -158,6 +160,50 @@ vqa40x --cal-page mypage.bin      # serve another unit's page (CRC checked, warn
 
 The audio engine reads its ADC/DAC trims from whatever page is served, so a
 calibrated host always measures a loopback of exactly `--loopback-gain-db`.
+
+## Recording USB exchanges
+
+`--record <path>` captures everything the attached client sends and everything
+the device answers — the exact traffic the official app (or any other host)
+puts on the virtual wire — to a JSONL file: one JSON event per line, readable
+as-is and complete enough to re-analyse or replay a session offline. Point it
+at a file, or at an existing directory to get an auto-named `usb-<unix>.jsonl`.
+
+```sh
+vqa40x --record session.jsonl
+```
+
+The first line is a session header (`"format": "vqa40x-usb-log/1"`). Every
+following event carries `n` (sequence number, contiguous from 1), `t` (seconds
+since server start), `c` (connection id, one per attach) and a `kind`:
+
+| `kind` | Meaning |
+|---|---|
+| `attach` / `detach` | A client imported the device (busid, peer, vid/pid, persona) / dropped it (reason) |
+| `control` | EP0 control transfer: decoded SETUP (`request_name` for standard requests) + data stage |
+| `reg_write` | EP1 register frame, decoded: `reg`, `reg_name`, u32 `value`, raw `hex` |
+| `reg_read_req` / `reg_read` | Register read request and its 4-byte reply, paired by FIFO order |
+| `dac_data` / `adc_data` | EP2 stream block: `len`, `frames` (int32 LE stereo, right first), payload as `data_b64` |
+| `in_req` | An IN URB queued by the client (shows the host's read-ahead behaviour) |
+| `out` / `in` | Raw transfers (bootloader HID reports, unknown endpoints), hex up to 64 bytes then base64 |
+| `unlink` | The client cancelled a pending URB (`victim`, `outcome`) |
+
+Register frames are decoded with the same register map the device model
+implements; multi-frame URBs (several 5-byte frames in one transfer) produce
+one event per frame sharing the URB's `seq`. During streaming the log grows by
+roughly 1 MB per second of capture; `--record-data summary` drops the payloads
+(lengths stay) when only the control flow matters.
+
+The control flow reads directly with `jq`:
+
+```sh
+jq -c 'select(.kind | startswith("reg"))' session.jsonl   # the register bus
+jq -c 'select(.kind == "control")' session.jsonl          # enumeration
+```
+
+and `data_b64` payloads decode back to samples in a few lines of Python
+(`base64.b64decode`, then `struct.unpack("<ii", ...)` per frame — right
+channel first on the wire, full scale 2^31).
 
 ## Architecture
 
