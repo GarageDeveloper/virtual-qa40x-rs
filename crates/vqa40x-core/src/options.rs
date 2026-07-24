@@ -57,6 +57,11 @@ pub struct GenSpec {
     pub channel: GenChannel,
 }
 
+/// The capability/feature word (register 0x1B) captured on a real QA402.
+/// A real QA403's value is not known yet; [`SimOptions::capability`] exists
+/// to probe what host apps derive from this register.
+pub const DEFAULT_CAPABILITY: u32 = 0x4000_0040;
+
 /// A random serial in the real units' format (`XXXX_XXXX`, hex digits).
 /// Used as the default so the virtual device never impersonates a specific
 /// physical unit; pass an explicit serial to pin it.
@@ -82,6 +87,12 @@ pub struct SimOptions {
     /// Version to report after a fake flash when the image is not found in the
     /// firmware registry. `None` keeps the current version.
     pub post_flash_version: Option<u32>,
+    /// Value served by the capability/feature register 0x1B. Defaults to
+    /// [`DEFAULT_CAPABILITY`], the word captured on a real QA402 — a real
+    /// QA403 likely differs (the official app reads this register at connect
+    /// before building its sample-rate menu). Configurable to probe which
+    /// bits unlock model-specific features like 384 kHz.
+    pub capability: u32,
     /// Optional sha256→version map (the host project's firmware-registry.json).
     /// Note: the vendor app zeroes 2 bytes at size−4 before sending, so wire
     /// images usually do NOT match the registry's embedded-image hashes;
@@ -143,6 +154,7 @@ impl Default for SimOptions {
             pid: Model::Qa402.default_pid(),
             serial: random_serial(),
             fw_version: 60,
+            capability: DEFAULT_CAPABILITY,
             post_flash_version: None,
             registry: None,
             realtime: true,

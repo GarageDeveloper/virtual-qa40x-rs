@@ -26,6 +26,9 @@ pub struct DeviceSpec {
     pub pid: Option<String>,
     /// Firmware version served by register 0x10.
     pub fw_version: Option<u32>,
+    /// Value served by the capability register 0x1B, hex ("0x40000040") or
+    /// decimal. Default: the word captured on a real QA402.
+    pub capability: Option<String>,
     /// Boot straight into the NXP KBOOT bootloader (recovery mode).
     pub boot_bootloader: Option<bool>,
     /// Version reported after a fake flash (when not resolved via a registry).
