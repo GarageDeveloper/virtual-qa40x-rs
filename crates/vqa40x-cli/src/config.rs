@@ -29,6 +29,9 @@ pub struct DeviceSpec {
     /// Value served by the capability register 0x1B, hex ("0x40000040") or
     /// decimal. Default: the word captured on a real QA402.
     pub capability: Option<String>,
+    /// Value served by register 0x1C, hex or decimal. Default: the model's
+    /// word (QA402 0x02A36083, QA403 0x7F320BB0).
+    pub capability2: Option<String>,
     /// Boot straight into the NXP KBOOT bootloader (recovery mode).
     pub boot_bootloader: Option<bool>,
     /// Version reported after a fake flash (when not resolved via a registry).

@@ -61,6 +61,12 @@ struct Args {
     #[arg(long, value_parser = parse_u32)]
     capability: Option<u32>,
 
+    /// Value served by register 0x1C, the second capability-style word (hex
+    /// or decimal). Default: the model's word as expected by the official
+    /// app's diagnostics (QA402 0x02A36083, QA403 0x7F320BB0).
+    #[arg(long, value_parser = parse_u32)]
+    capability2: Option<u32>,
+
     /// Firmware version reported after a fake flash (when the image is not in
     /// the registry). Without it the version is unchanged by a flash.
     #[arg(long)]
@@ -301,6 +307,12 @@ fn spec_to_options(spec: &DeviceSpec, index: usize) -> Result<SimOptions> {
         Some(s) => parse_u32(s).map_err(|e| anyhow::anyhow!("device {index}: capability: {e}"))?,
         None => vqa40x_core::options::DEFAULT_CAPABILITY,
     };
+    let capability2 = match spec.capability2.as_deref() {
+        Some(s) => {
+            Some(parse_u32(s).map_err(|e| anyhow::anyhow!("device {index}: capability2: {e}"))?)
+        }
+        None => None,
+    };
     Ok(SimOptions {
         model,
         vid,
@@ -308,6 +320,7 @@ fn spec_to_options(spec: &DeviceSpec, index: usize) -> Result<SimOptions> {
         serial: resolve_serial(spec.serial.as_deref()),
         fw_version: spec.fw_version.unwrap_or(60),
         capability,
+        capability2,
         post_flash_version: spec.post_flash_version,
         registry: load_registry(spec.registry.as_deref())?,
         realtime: spec.realtime.unwrap_or(true),
@@ -340,6 +353,7 @@ fn args_to_spec(a: &Args) -> DeviceSpec {
         pid: a.pid.map(|p| format!("0x{p:04X}")),
         fw_version: Some(a.fw_version),
         capability: a.capability.map(|v| format!("0x{v:08X}")),
+        capability2: a.capability2.map(|v| format!("0x{v:08X}")),
         boot_bootloader: Some(a.boot_bootloader),
         post_flash_version: a.post_flash_version,
         flash_secs: Some(a.flash_secs),
