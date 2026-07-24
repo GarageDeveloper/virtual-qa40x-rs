@@ -31,6 +31,7 @@ mod reg {
     pub const TELEM_TEMPERATURE: u8 = 0x16;
     pub const CALIBRATION: u8 = 0x19;
     pub const CAPABILITY: u8 = 0x1B;
+    pub const CAPABILITY2: u8 = 0x1C;
     pub const SERIAL_NUMBER: u8 = 0x1D;
     pub const STREAM_STATUS: u8 = 0x1E;
 }
@@ -55,6 +56,7 @@ pub fn register_name(addr: u8) -> Option<&'static str> {
         reg::FIRMWARE_VERSION => "FIRMWARE_VERSION",
         reg::CALIBRATION => "CALIBRATION",
         reg::CAPABILITY => "CAPABILITY",
+        reg::CAPABILITY2 => "CAPABILITY2",
         reg::SERIAL_NUMBER => "SERIAL_NUMBER",
         reg::STREAM_STATUS => "STREAM_STATUS",
         _ => return None,
@@ -228,6 +230,10 @@ impl Analyzer {
                 u32::from_le_bytes(chunk)
             }
             reg::CAPABILITY => self.opts.capability,
+            reg::CAPABILITY2 => self
+                .opts
+                .capability2
+                .unwrap_or_else(|| self.opts.model.default_capability2()),
             reg::SERIAL_NUMBER => self.opts.serial_u32(),
             reg::STREAM_STATUS => {
                 // Reads 0x40 right after a stream stop, 0x00 when idle —
@@ -647,6 +653,7 @@ impl UsbBackend for Analyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::options::Model;
 
     fn analyzer(noise_seed: Option<u64>) -> Analyzer {
         let opts = SimOptions {
@@ -679,6 +686,30 @@ mod tests {
         let a = Analyzer::new(Arc::new(opts), 60, tx);
         a.handle_frame(&[0x80 | reg::CAPABILITY, 0, 0, 0, 0]);
         assert_eq!(a.st.lock().unwrap().replies.pop_front(), Some(0x4000_00C0));
+    }
+
+    #[test]
+    fn capability2_defaults_per_model_and_overrides() {
+        let read = |opts: SimOptions| {
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let a = Analyzer::new(Arc::new(opts), 60, tx);
+            a.handle_frame(&[0x80 | reg::CAPABILITY2, 0, 0, 0, 0]);
+            let v = a.st.lock().unwrap().replies.pop_front();
+            v.unwrap()
+        };
+        let qa402 = SimOptions::default();
+        assert_eq!(read(qa402), 0x02A3_6083);
+        let qa403 = SimOptions {
+            model: Model::Qa403,
+            ..SimOptions::default()
+        };
+        assert_eq!(read(qa403), 0x7F32_0BB0);
+        let forced = SimOptions {
+            model: Model::Qa403,
+            capability2: Some(0x1234_5678),
+            ..SimOptions::default()
+        };
+        assert_eq!(read(forced), 0x1234_5678);
     }
 
     #[test]

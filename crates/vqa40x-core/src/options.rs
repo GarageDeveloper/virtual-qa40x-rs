@@ -37,6 +37,17 @@ impl Model {
             Model::Qa403 => 3,
         }
     }
+
+    /// Default word served by register 0x1C — unlike 0x1B this one differs
+    /// per model. These are the values the official app's device-info
+    /// diagnostics expect for each model (it reads 0x1B/0x1C and flags a
+    /// mismatch); informational only as far as we have observed.
+    pub fn default_capability2(&self) -> u32 {
+        match self {
+            Model::Qa402 => 0x02A3_6083,
+            Model::Qa403 => 0x7F32_0BB0,
+        }
+    }
 }
 
 /// Which channel(s) the independent input generator drives.
@@ -93,6 +104,11 @@ pub struct SimOptions {
     /// before building its sample-rate menu). Configurable to probe which
     /// bits unlock model-specific features like 384 kHz.
     pub capability: u32,
+    /// Value served by register 0x1C, the second capability-style word. This
+    /// one differs per model; `None` serves the model's default
+    /// ([`Model::default_capability2`]), resolved at read time so a model
+    /// override keeps a coherent pair.
+    pub capability2: Option<u32>,
     /// Optional sha256→version map (the host project's firmware-registry.json).
     /// Note: the vendor app zeroes 2 bytes at size−4 before sending, so wire
     /// images usually do NOT match the registry's embedded-image hashes;
@@ -155,6 +171,7 @@ impl Default for SimOptions {
             serial: random_serial(),
             fw_version: 60,
             capability: DEFAULT_CAPABILITY,
+            capability2: None,
             post_flash_version: None,
             registry: None,
             realtime: true,
